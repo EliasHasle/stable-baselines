@@ -1,5 +1,6 @@
 import sys
 import time
+import warnings
 import multiprocessing
 from collections import deque
 
@@ -45,7 +46,7 @@ class SAC(OffPolicyRLModel):
     :param tau: (float) the soft update coefficient ("polyak update", between 0 and 1)
     :param ent_coef: (float or str) Entropy regularization coefficient. (Equivalent to
         inverse of reward scale in the original SAC paper.)  Controlling exploration/exploitation trade-off.
-        Set it to 'auto' to learn it automatically
+        Set it to 'auto' to learn it automatically (and 'auto_0.1' for using 0.1 as initial value)
     :param train_freq: (int) Update the model every `train_freq` steps.
     :param learning_starts: (int) how many steps of the model to collect transitions for before learning starts
     :param target_update_interval: (int) update the target network every `target_network_update_freq` steps.
@@ -110,7 +111,7 @@ class SAC(OffPolicyRLModel):
         self.learning_rate_ph = None
         self.processed_obs_ph = None
         self.processed_next_obs_ph = None
-        self.log_alpha = None
+        self.log_ent_coef = None
 
         if _init_setup_model:
             self.setup_model()
@@ -160,18 +161,37 @@ class SAC(OffPolicyRLModel):
                                                                     policy_out, create_qf=True, create_vf=False,
                                                                     reuse=True)
 
+                    # Target entropy is used when learning the entropy coefficient
                     if self.env is not None and self.target_entropy == 'auto':
-                        # automatically target entropy if needed
+                        # automatically set target entropy if needed
                         self.target_entropy = -np.prod(self.env.action_space.shape).astype(np.float32)
 
-                    self.log_alpha = tf.get_variable(
-                        'log_alpha',
-                        dtype=tf.float32,
-                        initializer=0.0)
-                    if self.ent_coef == 'auto':
-                        self.ent_coef = tf.exp(self.log_alpha)
+                    if isinstance(self.ent_coef, str) and self.ent_coef.startswith('auto'):
+                        if self.target_entropy == 'auto':
+                            if self.verbose >= 1:
+                                warnings.warn("When using ent_coef='auto' and target_entropy='auto'"
+                                              "you must pass a valid environment at initialization to train SAC")
+                            # Default value to avoid error
+                            # this allows to use SAC in test mode without setting an environment
+                            self.target_entropy = -1
 
-                        assert self.target_entropy is not None and not isinstance(self.target_entropy, str)
+                        init_value = 1.0
+                        if '_' in self.ent_coef:
+                            init_value = float(self.ent_coef.split('_')[1])
+                            assert init_value > 0., "The initial value of ent_coef must be greater than 0"
+
+                        self.log_ent_coef = tf.get_variable('log_ent_coef', dtype=tf.float32,
+                                                            initializer=np.log(init_value).astype(np.float32))
+                        self.ent_coef = tf.exp(self.log_ent_coef)
+
+                        assert (self.target_entropy is not None
+                                and not isinstance(self.target_entropy, str)), "target_entropy must be set when"\
+                                                                               "learning the entropy coefficient"
+                    else:
+                        # Force conversion to float
+                        # this will throw an error if a malformed string (different from 'auto')
+                        # is passed
+                        self.ent_coef = float(self.ent_coef)
 
                 with tf.variable_scope("target", reuse=False):
                     # Create the value network
@@ -197,7 +217,7 @@ class SAC(OffPolicyRLModel):
                     ent_coef_loss, entropy_optimizer = None, None
                     if not isinstance(self.ent_coef, float):
                         ent_coef_loss = -tf.reduce_mean(
-                            self.log_alpha * tf.stop_gradient(logp_pi + self.target_entropy))
+                            self.log_ent_coef * tf.stop_gradient(logp_pi + self.target_entropy))
                         entropy_optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph)
 
                     # Compute the policy loss
@@ -251,10 +271,12 @@ class SAC(OffPolicyRLModel):
                                          value_loss, qf1, qf2, value_fn, logp_pi,
                                          self.entropy, policy_train_op, train_values_op]
 
+                        # Add entropy coefficient optimization operation if needed
                         if ent_coef_loss is not None:
                             with tf.control_dependencies([train_values_op]):
-                                ent_coef_op = entropy_optimizer.minimize(ent_coef_loss, var_list=self.log_alpha)
-                                self.step_ops += [ent_coef_op]
+                                ent_coef_op = entropy_optimizer.minimize(ent_coef_loss, var_list=self.log_ent_coef)
+                                self.infos_names += ['ent_coef_loss', 'ent_coef']
+                                self.step_ops += [ent_coef_op, ent_coef_loss, self.ent_coef]
 
                     # Monitor losses and entropy in tensorboard
                     tf.summary.scalar('policy_loss', policy_loss)
@@ -262,6 +284,10 @@ class SAC(OffPolicyRLModel):
                     tf.summary.scalar('qf2_loss', qf2_loss)
                     tf.summary.scalar('value_loss', value_loss)
                     tf.summary.scalar('entropy', self.entropy)
+                    if ent_coef_loss is not None:
+                        tf.summary.scalar('ent_coef_loss', ent_coef_loss)
+                        tf.summary.scalar('ent_coef', self.ent_coef)
+
                     tf.summary.scalar('learning_rate', tf.reduce_mean(self.learning_rate_ph))
 
                 # Retrieve parameters that must be saved
@@ -306,6 +332,10 @@ class SAC(OffPolicyRLModel):
         policy_loss, qf1_loss, qf2_loss, value_loss, *values = out
         # qf1, qf2, value_fn, logp_pi, entropy, *_ = values
         entropy = values[4]
+
+        if self.log_ent_coef is not None:
+            ent_coef_loss, ent_coef = values[-2:]
+            return policy_loss, qf1_loss, qf2_loss, value_loss, entropy, ent_coef_loss, ent_coef
 
         return policy_loss, qf1_loss, qf2_loss, value_loss, entropy
 
