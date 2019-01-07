@@ -444,7 +444,7 @@ class SAC(OffPolicyRLModel):
             "train_freq": self.train_freq,
             "batch_size": self.batch_size,
             "tau": self.tau,
-            "ent_coef": self.ent_coef,
+            "ent_coef": self.ent_coef if isinstance(self.ent_coef, float) else 'auto',
             "target_entropy": self.target_entropy,
             # Should we also store the replay buffer?
             # this may lead to high memory usage
