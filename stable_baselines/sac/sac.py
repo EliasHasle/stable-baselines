@@ -183,10 +183,6 @@ class SAC(OffPolicyRLModel):
                         self.log_ent_coef = tf.get_variable('log_ent_coef', dtype=tf.float32,
                                                             initializer=np.log(init_value).astype(np.float32))
                         self.ent_coef = tf.exp(self.log_ent_coef)
-
-                        assert (self.target_entropy is not None
-                                and not isinstance(self.target_entropy, str)), "target_entropy must be set when"\
-                                                                               "learning the entropy coefficient"
                     else:
                         # Force conversion to float
                         # this will throw an error if a malformed string (different from 'auto')
@@ -214,6 +210,8 @@ class SAC(OffPolicyRLModel):
                     qf1_loss = 0.5 * tf.reduce_mean((q_backup - qf1) ** 2)
                     qf2_loss = 0.5 * tf.reduce_mean((q_backup - qf2) ** 2)
 
+                    # Compute the entropy temperature loss
+                    # it is used when the entropy coefficient is learned
                     ent_coef_loss, entropy_optimizer = None, None
                     if not isinstance(self.ent_coef, float):
                         ent_coef_loss = -tf.reduce_mean(
