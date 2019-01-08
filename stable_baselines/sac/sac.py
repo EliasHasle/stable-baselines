@@ -1,6 +1,5 @@
 import sys
 import time
-import warnings
 import multiprocessing
 from collections import deque
 
