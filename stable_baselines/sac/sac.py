@@ -31,7 +31,8 @@ class SAC(OffPolicyRLModel):
     Soft Actor-Critic (SAC)
     Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor,
     This implementation borrows code from original implementation (https://github.com/haarnoja/sac)
-    and from OpenAI Spinning Up (https://github.com/openai/spinningup)
+    from OpenAI Spinning Up (https://github.com/openai/spinningup) and from the Softlearning repo
+    (https://github.com/rail-berkeley/softlearning/)
     Paper: https://arxiv.org/abs/1801.01290
     Introduction to SAC: https://spinningup.openai.com/en/latest/algorithms/sac.html
 
@@ -44,7 +45,7 @@ class SAC(OffPolicyRLModel):
     :param buffer_size: (int) size of the replay buffer
     :param batch_size: (int) Minibatch size for each gradient update
     :param tau: (float) the soft update coefficient ("polyak update", between 0 and 1)
-    :param ent_coef: (float or str) Entropy regularization coefficient. (Equivalent to
+    :param ent_coef: (str or float) Entropy regularization coefficient. (Equivalent to
         inverse of reward scale in the original SAC paper.)  Controlling exploration/exploitation trade-off.
         Set it to 'auto' to learn it automatically (and 'auto_0.1' for using 0.1 as initial value)
     :param train_freq: (int) Update the model every `train_freq` steps.
@@ -57,9 +58,9 @@ class SAC(OffPolicyRLModel):
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
     """
 
-    def __init__(self, policy, env, gamma=0.99, learning_rate=3e-3, buffer_size=50000,
+    def __init__(self, policy, env, gamma=0.99, learning_rate=3e-4, buffer_size=50000,
                  learning_starts=100, train_freq=1, batch_size=64,
-                 tau=0.005, ent_coef=0.1, target_update_interval=1,
+                 tau=0.005, ent_coef='auto', target_update_interval=1,
                  gradient_steps=1, target_entropy='auto',
                  verbose=0, tensorboard_log=None, _init_setup_model=True):
         super(SAC, self).__init__(policy=policy, env=env, replay_buffer=None, verbose=verbose,
@@ -147,9 +148,9 @@ class SAC(OffPolicyRLModel):
 
                 with tf.variable_scope("model", reuse=False):
                     # Create the policy
-                    # mu corresponds to deterministic actions
-                    # pi  corresponds to stochastic actions, used for training
-                    # logp_pi is the log probabilty of action pi
+                    # first return value corresponds to deterministic actions
+                    # policy_out corresponds to stochastic actions, used for training
+                    # logp_pi is the log probabilty of actions taken by the policy
                     _, policy_out, logp_pi = self.policy_tf.make_actor(self.processed_obs_ph)
                     # Monitor the entropy of the policy,
                     # this is not used for training
@@ -162,19 +163,19 @@ class SAC(OffPolicyRLModel):
                                                                     reuse=True)
 
                     # Target entropy is used when learning the entropy coefficient
-                    if self.env is not None and self.target_entropy == 'auto':
+                    if self.target_entropy == 'auto':
                         # automatically set target entropy if needed
                         self.target_entropy = -np.prod(self.env.action_space.shape).astype(np.float32)
+                    else:
+                        # Force conversion
+                        # this will also throw an error for unexpected string
+                        self.target_entropy = float(self.target_entropy)
 
+                    # The entropy coefficient or entropy can be learned automatically
+                    # see Automating Entropy Adjustment for Maximum Entropy RL section
+                    # of https://arxiv.org/abs/1812.05905
                     if isinstance(self.ent_coef, str) and self.ent_coef.startswith('auto'):
-                        if self.target_entropy == 'auto':
-                            if self.verbose >= 1:
-                                warnings.warn("When using ent_coef='auto' and target_entropy='auto'"
-                                              "you must pass a valid environment at initialization to train SAC")
-                            # Default value to avoid error
-                            # this allows to use SAC in test mode without setting an environment
-                            self.target_entropy = -1
-
+                        # Default initial value of ent_coef when learned
                         init_value = 1.0
                         if '_' in self.ent_coef:
                             init_value = float(self.ent_coef.split('_')[1])
